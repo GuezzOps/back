@@ -1,0 +1,123 @@
+pipeline {
+    agent any
+    tools {
+        maven 'Maven 3.8'
+    }
+    environment { 
+        DOCKERHUB_CREDENTIALS=credentials('docker-credentials')
+        spring_registry = "aminedock02/spring-repo" 
+
+        registryCredential = 'docker-credentials' 
+
+        dockerImage = '' 
+
+    }
+    stages {
+        stage('Git fetch') {
+            steps {
+                git branch: 'amine', 
+                url: 'https://github.com/AchAmine/SpringProject',
+                credentialsId: 'git-credentials'
+            }
+        }
+        stage('Increment version'){
+            steps {
+                script {
+                    sh "mvn build-helper:parse-version versions:set \
+                    -DnewVersion=\\\${parsedVersion.majorVersion}.\\\${parsedVersion.minorVersion}.\\\${parsedVersion.nextIncrementalVersion} \
+                    versions:commit"
+
+                }
+            }
+        }
+
+        stage('BUILD') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+            
+        }
+
+        stage('SonarQube analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                 sh 'mvn sonar:sonar'
+                }
+            }
+        }
+      
+        
+        stage('test ') {
+             steps{
+                sh'mvn test'
+        }
+         }
+        
+         stage("UploadArtifact"){
+            steps{
+                script{
+                    def mavenPom = readMavenPom file: 'pom.xml'
+                nexusArtifactUploader(
+                  nexusVersion: 'nexus3',
+                  protocol: 'http',
+                  nexusUrl: '192.168.60.15:8081',
+                  groupId: 'com.esprit.examen',
+                  version: "${mavenPom.version}",
+                  repository: 'tpachat-repo',
+                  credentialsId: 'nexus-credentials',
+                  artifacts: [
+                    [artifactId: 'tpAchatProject',
+                     classifier: '',
+                     file: "target/tpAchatProject-${mavenPom.version}.jar",
+                     type: 'jar']
+                            ]
+                )
+            }
+          }
+        }
+
+        stage('Build App Image') {
+            steps {
+				sh 'docker build -t aminedock02/spring-repo .'
+			}
+        }
+        stage('Login dockerhub') {
+
+			steps {
+				sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+			}
+		}
+
+       
+       
+		
+	    stage('Docker compose') {
+          steps{
+            script {
+              sh 'docker-compose down --rmi all'
+              sh 'docker-compose up -d '
+            }
+          }
+          post {
+                success {
+                    sh 'docker-compose ps'
+                }
+            }
+        }  
+        
+          
+		
+ 
+    }
+    
+    post {
+        always {
+            emailext body: "${currentBuild.currentResult}: Job ${env.JOB_NAME} build ${env.BUILD_NUMBER}\n More info at: ${env.BUILD_URL}",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']],
+                subject: "Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}"
+            
+        }
+    }
+    
+    
+}
